@@ -1,3 +1,4 @@
 .env
 report.csv
 sharkbot.csv
+node_modules/
