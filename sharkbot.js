@@ -1,4 +1,5 @@
 import fs from 'fs';
+import fetch from 'node-fetch';
 import { Client } from 'pg';
 import csvParser from 'csv-parser';
 import 'dotenv/config';
@@ -28,22 +29,42 @@ async function main() {
 
   await client.connect();
 
+  const driveFileId = '17uYzGUV0c1tn-Jxm4vqE5oGqyYnVEJMh';
+  const downloadUrl = `https://drive.google.com/uc?export=download&id=${driveFileId}`;
+
+  const response = await fetch(downloadUrl);
+  if (!response.ok) throw new Error('Falha ao baixar o arquivo do Drive');
+
+  const fileBuffer = await response.buffer();
+  fs.writeFileSync('sharkbot.csv', fileBuffer);
+  console.log('✅ CSV baixado com sucesso.');
+
+  // Ler e inserir no banco
   const results = [];
+  const today = new Date();
+  const todayStr = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1)
+    .toString()
+    .padStart(2, '0')}/${today.getFullYear()}`;
 
   fs.createReadStream('sharkbot.csv')
     .pipe(csvParser({ separator: ';', mapHeaders: ({ header }) => header.trim() }))
     .on('data', (data) => {
-      const row = {
-        search_date: convertDate(data['Data Pesquisa']),
-        nickname: data['Nick'] || null,
-        tournaments_count: safeParseInt(data['Qtd Torneios']),
-        average_stack: safeParseFloat(data['Stack Medio']),
-        profit: safeParseFloat(data['Lucro']),
-        bot_date: data['Data BOT']?.trim() || null,
-      };
-      results.push(row);
+      const botDate = data['Data BOT']?.trim() || '';
+      if (botDate.includes(todayStr)) {
+        const row = {
+          search_date: convertDate(data['Data Pesquisa']),
+          nickname: data['Nick'] || null,
+          tournaments_count: safeParseInt(data['Qtd Torneios']),
+          average_stack: safeParseFloat(data['Stack Medio']),
+          profit: safeParseFloat(data['Lucro']),
+          bot_date: botDate,
+        };
+        results.push(row);
+      }
     })
     .on('end', async () => {
+      console.log(`Total de registros com Data BOT igual a hoje: ${results.length}`);
+
       for (const row of results) {
         try {
           const exists = await client.query(
@@ -81,4 +102,11 @@ async function main() {
     });
 }
 
-main();
+console.log("running file")
+schedule.scheduleJob('50 18 * * *', function () {
+    main();
+});
+
+schedule.scheduleJob('00 08 * * *', function () {
+    main();
+});

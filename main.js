@@ -1,7 +1,9 @@
 import fs from 'fs';
+import fetch from 'node-fetch';
 import { Client } from 'pg';
 import csvParser from 'csv-parser';
 import 'dotenv/config';
+import schedule from 'node-schedule';
 
 function safeParseInt(value) {
   const n = parseInt(value);
@@ -22,7 +24,17 @@ function convertDate(str) {
 }
 
 async function main() {
-    console.log("asas")
+  console.log('Iniciando importação...');
+
+  const driveFileId = '11rDoORTnsANZubyxC1BzUKLpmRRn0My9';
+  const downloadUrl = `https://drive.google.com/uc?export=download&id=${driveFileId}`;
+
+  const response = await fetch(downloadUrl);
+  if (!response.ok) throw new Error('Falha ao baixar o CSV.');
+
+  const fileBuffer = Buffer.from(await response.arrayBuffer());
+  fs.writeFileSync('report.csv', fileBuffer);
+
   const client = new Client({
     connectionString: process.env.DATABASE_URL
   });
@@ -30,44 +42,54 @@ async function main() {
   await client.connect();
 
   const results = [];
+  const today = new Date();
+  const todayStr = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`;
 
   fs.createReadStream('report.csv')
+    .on('error', (err) => {
+      console.error('Erro ao abrir o arquivo:', err);
+    })
     .pipe(csvParser({ separator: ',', mapHeaders: ({ header }) => header.trim() }))
     .on('data', (data) => {
-      const row = {
-        report_date: convertDate(data['Data Relatório']),
-        century: data['Century'],
-        player: data['Player'] || null,
-        network: data['Network'] || null,
-        name: data['Name'] || null,
-        currency: data['Currency'] || null,
-        buy_in: safeParseFloat(data['Buy in']),
-        profit: safeParseFloat(data['Profit']),
-        shots: data['Shots'] ? safeParseInt(data['Shots']) : null,
-        date: data['Date'] ? data['Date'].replace(/"/g, '').trim() : null,
-        time: data['Time'] ? data['Time'].replace(/"/g, '').trim() : null,
-        total_entrants: safeParseInt(data['Total Entrants']),
-        tournament_id: data['Tournament ID'] || null,
-        stake: data['Stake'] || null,
-        game: data['Game'] || null,
-        structure: data['Structure'] || null,
-        flags: data['Flags'] || null,
-        rake: safeParseFloat(data['Rake']),
-        position: safeParseInt(data['Position']),
-        speed: data['Speed'] || null
-      };
-      results.push(row);
+      const reportDate = data['Data Relatório']?.replace(/"/g, '').trim();
+      if (reportDate === todayStr) {
+        const row = {
+          report_date: convertDate(data['Data Relatório']),
+          century: data['Century'],
+          player: data['Player'] || null,
+          network: data['Network'] || null,
+          name: data['Name'] || null,
+          currency: data['Currency'] || null,
+          buy_in: safeParseFloat(data['Buy in']),
+          profit: safeParseFloat(data['Profit']),
+          shots: data['Shots'] ? safeParseInt(data['Shots']) : 0,
+          date: data['Date'] ? data['Date'].replace(/"/g, '').trim() : null,
+          time: data['Time'] ? data['Time'].replace(/"/g, '').trim() : null,
+          total_entrants: safeParseInt(data['Total Entrants']),
+          tournament_id: data['Tournament ID'] || null,
+          stake: data['Stake'] || null,
+          game: data['Game'] || null,
+          structure: data['Structure'] || null,
+          flags: data['Flags'] || null,
+          rake: safeParseFloat(data['Rake']),
+          position: safeParseInt(data['Position']),
+          speed: data['Speed'] || null
+        };
+        results.push(row);
+      }
     })
     .on('end', async () => {
-      const notInserted = [];
-
+      console.log(`Total de registros para inserir: ${results.length}`);
       try {
         for (const row of results) {
-          if (!row.report_date || !row.profit || row.shots === null || !row.date || !row.time) {
-            notInserted.push({
-              row,
-              reason: 'Campos obrigatórios faltando (report_date, profit, shots, date ou time)'
-            });
+          const missingFields = [];
+          if (!row.report_date) missingFields.push('report_date');
+          if (row.profit === null || row.profit === undefined) missingFields.push('profit');
+          if (!row.date) missingFields.push('date');
+          if (!row.time) missingFields.push('time');
+
+          if (missingFields.length > 0) {
+            console.log(`Ignorado por falta de campos: tournament_id ${row.tournament_id}, player ${row.player}`);
             continue;
           }
 
@@ -77,10 +99,7 @@ async function main() {
           );
 
           if (res.rowCount > 0) {
-            notInserted.push({
-              row,
-              reason: `Registro já existe para tournament_id ${row.tournament_id} e player ${row.player}`
-            });
+            console.log(`Duplicado, não inserido: tournament_id ${row.tournament_id}, player ${row.player}`);
             continue;
           }
 
@@ -116,15 +135,15 @@ async function main() {
 
           console.log(`Inserido: tournament_id ${row.tournament_id}, player ${row.player}`);
         }
-
-        console.log('\nRegistros NÃO inseridos:');
-        for (const fail of notInserted) {
-          console.log(`Tournament_id: ${fail.row.tournament_id}, Player: ${fail.row.player}, Motivo: ${fail.reason}`);
-        }
+      } catch (err) {
+        console.error('Erro na importação:', err);
       } finally {
         await client.end();
+        console.log('Importação finalizada.');
       }
     });
 }
-
-main();
+console.log("running file")
+schedule.scheduleJob('00 07 * * *', function () {
+    main();
+});
