@@ -2,6 +2,7 @@ import fs from 'fs';
 import fetch from 'node-fetch';
 import { Client } from 'pg';
 import csvParser from 'csv-parser';
+import schedule from 'node-schedule';
 import 'dotenv/config';
 
 function safeParseInt(value) {
